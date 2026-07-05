@@ -3,6 +3,7 @@ import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.models.db import Page, Url, UrlStatus, async_session
 from src.storage.html_store import HtmlStore
@@ -32,9 +33,6 @@ class MetadataStore:
     ) -> int | None:
         url_hash = hashlib.sha256(normalized_url.encode()).hexdigest()
 
-        if await self.url_exists(normalized_url):
-            return None
-
         async with async_session() as session:
             db_url = Url(
                 url=url,
@@ -46,7 +44,11 @@ class MetadataStore:
                 depth=depth,
             )
             session.add(db_url)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return None
             await session.refresh(db_url)
             logger.info("Added URL: %s (id=%d)", normalized_url, db_url.id)
             return db_url.id
@@ -86,7 +88,7 @@ class MetadataStore:
         etag: str | None = None,
     ) -> int:
         html_path = self.html_store.store(
-            normalized_url=f"url_{url_id}", html=html
+            url=f"url_{url_id}", html=html
         )
         content_hash = hashlib.sha256(html.encode()).hexdigest()
 

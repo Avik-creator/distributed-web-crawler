@@ -88,7 +88,7 @@ class Crawler:
                 if isinstance(result, Exception):
                     logger.error("Task failed: %s", result)
                 else:
-                    pages_crawled += len(result) if result else 1
+                    pages_crawled += 1
 
             logger.info("Progress: %d pages crawled", pages_crawled)
 
@@ -99,8 +99,8 @@ class Crawler:
 async def main() -> None:
     crawler = Crawler()
     await crawler.run(
-        seed_urls=["https://example.com"],
-        max_pages=50,
+        seed_urls=["https://en.wikipedia.org/wiki/Web_crawler"],
+        max_pages=10,
     )
 
 
