@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import time
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
@@ -21,6 +22,7 @@ from src.frontier.scheduler import Scheduler
 from src.frontier.stream_queue import StreamQueue
 from src.models.db import init_db
 from src.storage.metadata import MetadataStore
+from src.storage.search_index import SearchIndex
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,12 +30,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+CONSUMER_PREFIX = "worker"
+
 
 class Worker:
     def __init__(self, worker_id: str | None = None) -> None:
         self.worker_id = worker_id or f"{CONSUMER_PREFIX}_{os.getpid()}"
         self.downloader = Downloader()
         self.metadata = MetadataStore()
+        self.search_index = SearchIndex()
         self.max_depth = settings.max_depth
         self.redis: aioredis.Redis | None = None
         self.robots: RobotsCache | None = None
@@ -42,7 +47,8 @@ class Worker:
         self.stream: StreamQueue | None = None
         self.dedup: Deduplicator | None = None
         self._shutting_down = False
-        self._content_hashes: set[str] = set()
+        self._content_hashes: set[int] = set()
+        self._etag_cache: dict[str, str] = {}
 
     async def _init_redis(self) -> None:
         self.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -52,10 +58,15 @@ class Worker:
         self.stream = StreamQueue(self.redis)
         self.dedup = Deduplicator(self.redis)
         await self.stream.init_group()
+        await self.search_index.ensure_index()
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
         sig_name = signal.Signals(signum).name
-        logger.info("Worker %s received %s, shutting down gracefully...", self.worker_id, sig_name)
+        logger.info(
+            "Worker %s received %s, shutting down gracefully...",
+            self.worker_id,
+            sig_name,
+        )
         self._shutting_down = True
 
     async def enqueue_url(
@@ -110,31 +121,53 @@ class Worker:
                 return []
 
             crawl_delay = await self.robots.get_crawl_delay(url)
-            wait = await self.scheduler.wait_for_slot(host, crawl_delay)
-            if wait > 0:
-                logger.info("Waiting %.1fs for %s crawl-delay", wait, host)
-                await asyncio.sleep(wait)
+            if crawl_delay is not None:
+                wait = await self.scheduler.wait_for_slot(host, crawl_delay)
+                if wait > 0:
+                    logger.debug("Waiting %.1fs for %s crawl-delay", wait, host)
+                    await asyncio.sleep(wait)
 
+            etag = self._etag_cache.get(url)
             logger.info("Crawling: %s (depth=%d)", url, depth)
-            result = await self.downloader.download(url)
+            result = await self.downloader.download(url, etag=etag)
 
-            await self.scheduler.mark_crawled(host, crawl_delay)
+            if result.status_code == 304:
+                logger.info("Not modified: %s (using ETag)", url)
+                await self.metadata.mark_crawled(url_id)
+                await self.stream.ack(stream_id)
+                return []
+
+            if crawl_delay is not None:
+                await self.scheduler.mark_crawled(host, crawl_delay)
 
         except DownloadError as exc:
+            if exc.status_code == 304:
+                logger.info("Not modified: %s", url)
+                await self.metadata.mark_crawled(url_id)
+                await self.stream.ack(stream_id)
+                return []
             logger.warning("Failed to download %s: %s", url, exc)
             await self.metadata.mark_failed(url_id)
             return []
         finally:
             await self.lease.release(url_id)
 
-        content_simhash = simhash(result.html)
+        content_hash = simhash(result.html)
+        if content_hash in self._content_hashes:
+            logger.info("Duplicate content: %s", url)
+            await self.metadata.mark_crawled(url_id)
+            await self.stream.ack(stream_id)
+            return []
         for existing_hash in self._content_hashes:
-            if is_near_duplicate(content_simhash, existing_hash):
-                logger.info("Near-duplicate content detected for %s, skipping storage", url)
+            if is_near_duplicate(content_hash, existing_hash):
+                logger.info("Near-duplicate content: %s", url)
                 await self.metadata.mark_crawled(url_id)
                 await self.stream.ack(stream_id)
                 return []
-        self._content_hashes.add(content_simhash)
+        self._content_hashes.add(content_hash)
+
+        if result.etag:
+            self._etag_cache[url] = result.etag
 
         title, links = parse_html(result.html, base_url=url)
 
@@ -148,10 +181,21 @@ class Worker:
         await self.metadata.mark_crawled(url_id)
         await self.stream.ack(stream_id)
 
+        await self.search_index.index_page(
+            url=url,
+            title=title,
+            body=result.html[:10000],
+            host=host,
+            crawled_at=datetime.now(UTC).isoformat(),
+            status_code=result.status_code,
+        )
+
         new_urls: list[str] = []
         if depth < self.max_depth:
             for link in links:
-                enqueued = await self.enqueue_url(link, base_url=url, depth=depth + 1)
+                enqueued = await self.enqueue_url(
+                    link, base_url=url, depth=depth + 1
+                )
                 if enqueued:
                     new_urls.append(link)
 
@@ -215,21 +259,20 @@ class Worker:
                 pages_crawled,
             )
         else:
-            logger.info("Crawl complete. Total pages crawled: %d", pages_crawled)
+            logger.info(
+                "Crawl complete. Total pages crawled: %d", pages_crawled
+            )
 
         await self.downloader.close()
         if self.redis:
             await self.redis.aclose()
 
 
-CONSUMER_PREFIX = "worker"
-
-
 async def main() -> None:
     worker = Worker()
     await worker.run(
         seed_urls=["https://en.wikipedia.org/wiki/Web_crawler"],
-        max_pages=10,
+        max_pages=20,
     )
 
 
