@@ -43,10 +43,10 @@ class RobotsCache:
     async def _get_rules(self, robots_url: str) -> RobotExclusionRulesParser | None:
         cached = await self.redis.get(f"{ROBOTS_KEY_PREFIX}{robots_url}")
         if cached is not None:
-            if cached == b"":
+            if cached == "":
                 return None
             rules = RobotExclusionRulesParser()
-            rules.parse(cached.decode())
+            rules.parse(cached)
             return rules
 
         rules = await self._fetch_and_cache(robots_url)

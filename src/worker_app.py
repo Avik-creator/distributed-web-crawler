@@ -51,7 +51,12 @@ class Worker:
         self._etag_cache: dict[str, str] = {}
 
     async def _init_redis(self) -> None:
-        self.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        self.redis = aioredis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=30,
+            socket_connect_timeout=10,
+        )
         self.robots = RobotsCache(self.redis)
         self.scheduler = Scheduler(self.redis)
         self.lease = Leasing(self.redis)
@@ -267,13 +272,72 @@ class Worker:
         if self.redis:
             await self.redis.aclose()
 
+    async def run_consume(self) -> None:
+        await init_db()
+        await self._init_redis()
+
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
+        logger.info("Worker %s starting (consume mode)", self.worker_id)
+
+        pages_crawled = 0
+        start_time = time.monotonic()
+
+        while not self._shutting_down:
+            try:
+                batch = await self.stream.pop(
+                    consumer=self.worker_id,
+                    count=settings.max_concurrent_requests,
+                    block=5000,
+                )
+            except aioredis.ResponseError as exc:
+                if "NOGROUP" in str(exc):
+                    logger.warning("Consumer group lost, re-creating...")
+                    await self.stream.init_group()
+                    continue
+                raise
+            except (aioredis.TimeoutError, aioredis.ConnectionError) as exc:
+                logger.warning("Redis read error: %s, retrying...", exc)
+                await asyncio.sleep(2)
+                continue
+
+            if not batch:
+                await asyncio.sleep(1)
+                continue
+
+            tasks = [self.crawl_url(record) for record in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("Task failed: %s", result)
+                else:
+                    pages_crawled += 1
+
+            qsize = await self.stream.size()
+            elapsed = time.monotonic() - start_time
+            rate = pages_crawled / elapsed if elapsed > 0 else 0
+            logger.info(
+                "Progress: %d pages crawled | queue=%d | rate=%.1f pages/s",
+                pages_crawled,
+                qsize,
+                rate,
+            )
+
+        logger.info(
+            "Worker %s shut down after %d pages",
+            self.worker_id,
+            pages_crawled,
+        )
+        await self.downloader.close()
+        if self.redis:
+            await self.redis.aclose()
+
 
 async def main() -> None:
     worker = Worker()
-    await worker.run(
-        seed_urls=["https://en.wikipedia.org/wiki/Web_crawler"],
-        max_pages=20,
-    )
+    await worker.run_consume()
 
 
 if __name__ == "__main__":

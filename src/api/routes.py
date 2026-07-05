@@ -115,15 +115,20 @@ async def health() -> dict:
 
 @router.get("/metrics")
 async def metrics() -> dict:
+    def _counter_val(c: object) -> float:
+        if hasattr(c, "_metrics") and c._metrics:  # type: ignore[attr-defined]
+            return sum(m._value.get() for m in c._metrics.values())  # type: ignore[attr-defined]
+        return 0.0
+
     return {
-        "pages_crawled": pages_crawled_total._value.get(),
-        "pages_failed": pages_failed_total._value.get(),
+        "pages_crawled": _counter_val(pages_crawled_total),
+        "pages_failed": _counter_val(pages_failed_total),
         "queue_size": queue_size._value.get(),
         "crawl_rate": crawl_rate._value.get(),
-        "dedup_hits": dedup_hits._value.get(),
-        "indexed_pages": indexed_pages_total._value.get(),
-        "robots_cache_hits": robots_cache_hits._value.get(),
-        "robots_cache_misses": robots_cache_misses._value.get(),
+        "dedup_hits": _counter_val(dedup_hits),
+        "indexed_pages": _counter_val(indexed_pages_total),
+        "robots_cache_hits": _counter_val(robots_cache_hits),
+        "robots_cache_misses": _counter_val(robots_cache_misses),
     }
 
 
