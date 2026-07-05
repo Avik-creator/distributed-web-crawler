@@ -105,6 +105,9 @@ async def health() -> dict:
 
 @router.get("/metrics")
 async def metrics() -> dict:
+    import time
+
+    import redis.asyncio as aioredis
     from sqlalchemy import func, select
 
     from src.models.db import Url, UrlStatus, async_session
@@ -127,18 +130,46 @@ async def metrics() -> dict:
             )
         ).scalar() or 0
 
+        reasons = (
+            await session.execute(
+                select(Url.failure_reason, func.count(Url.id))
+                .where(Url.status == UrlStatus.FAILED)
+                .where(Url.failure_reason.isnot(None))
+                .group_by(Url.failure_reason)
+                .order_by(func.count(Url.id).desc())
+                .limit(10)
+            )
+        ).all()
+        failure_reasons = {r: c for r, c in reasons}
+
     indexed = await search_index.count()
+
+    crawl_rate = 0.0
+    dedup_hits = 0
+    try:
+        r = aioredis.from_url(settings.redis_url, decode_responses=True)
+        now = time.time()
+        recent = await r.lrange("crawler:recent_crawls", 0, -1)
+        if recent:
+            timestamps = [float(t) for t in recent]
+            window_start = now - 60
+            in_window = [t for t in timestamps if t >= window_start]
+            crawl_rate = len(in_window) / 60.0 if in_window else 0.0
+        dedup_str = await r.get("crawler:dedup_hits")
+        dedup_hits = int(dedup_str) if dedup_str else 0
+        await r.aclose()
+    except Exception:
+        pass
 
     return {
         "pages_crawled": crawled,
         "pages_failed": failed,
         "queue_size": pending,
-        "crawl_rate": 0.0,
-        "dedup_hits": 0,
+        "crawl_rate": round(crawl_rate, 2),
+        "dedup_hits": dedup_hits,
         "indexed_pages": indexed,
         "total_urls": total,
-        "robots_cache_hits": 0,
-        "robots_cache_misses": 0,
+        "failure_reasons": failure_reasons,
     }
 
 

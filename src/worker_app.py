@@ -122,7 +122,7 @@ class Worker:
         try:
             if not await self.robots.is_allowed(url):
                 logger.info("Blocked by robots.txt: %s", url)
-                await self.metadata.mark_failed(url_id)
+                await self.metadata.mark_failed(url_id, "blocked by robots.txt")
                 return []
 
             crawl_delay = await self.robots.get_crawl_delay(url)
@@ -151,8 +151,9 @@ class Worker:
                 await self.metadata.mark_crawled(url_id)
                 await self.stream.ack(stream_id)
                 return []
-            logger.warning("Failed to download %s: %s", url, exc)
-            await self.metadata.mark_failed(url_id)
+            reason = f"HTTP {exc.status_code}" if exc.status_code else str(exc)
+            logger.warning("Failed to download %s: %s", url, reason)
+            await self.metadata.mark_failed(url_id, reason)
             return []
         finally:
             await self.lease.release(url_id)
@@ -160,12 +161,14 @@ class Worker:
         content_hash = simhash(result.html)
         if content_hash in self._content_hashes:
             logger.info("Duplicate content: %s", url)
+            await self.redis.incr("crawler:dedup_hits")
             await self.metadata.mark_crawled(url_id)
             await self.stream.ack(stream_id)
             return []
         for existing_hash in self._content_hashes:
             if is_near_duplicate(content_hash, existing_hash):
                 logger.info("Near-duplicate content: %s", url)
+                await self.redis.incr("crawler:dedup_hits")
                 await self.metadata.mark_crawled(url_id)
                 await self.stream.ack(stream_id)
                 return []
@@ -185,6 +188,10 @@ class Worker:
         )
         await self.metadata.mark_crawled(url_id)
         await self.stream.ack(stream_id)
+
+        now = time.time()
+        await self.redis.lpush("crawler:recent_crawls", now)
+        await self.redis.ltrim("crawler:recent_crawls", 0, 999)
 
         await self.search_index.index_page(
             url=url,

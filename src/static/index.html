@@ -12,6 +12,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .header .badge{background:#22c55e;color:#000;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600}
 .container{max-width:1200px;margin:0 auto;padding:24px 32px}
 .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.stats-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:24px}
 .stat-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px}
 .stat-card .label{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
 .stat-card .value{font-size:28px;font-weight:700;color:#f8fafc}
@@ -70,6 +71,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
       <div class="value" id="s-failed">-</div>
     </div>
   </div>
+  <div class="stats-grid-2">
+    <div class="stat-card">
+      <div class="label">Crawl Rate (per min)</div>
+      <div class="value green" id="s-rate">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Dedup Hits</div>
+      <div class="value blue" id="s-dedup">-</div>
+    </div>
+  </div>
 
   <div class="section">
     <h2>Search Pages</h2>
@@ -90,6 +101,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
         onkeydown="if(event.key==='Enter')doEnqueue()">
       <button class="btn btn-green" onclick="doEnqueue()">Add URL</button>
     </div>
+  </div>
+
+  <div class="section">
+    <h2>Failure Reasons</h2>
+    <ul class="results" id="failure-reasons"></ul>
   </div>
 
   <div class="section">
@@ -116,6 +132,20 @@ async function loadStats() {
     document.getElementById('s-indexed').textContent = d.indexed_pages || 0;
     document.getElementById('s-queue').textContent = d.queue_size || 0;
     document.getElementById('s-failed').textContent = d.pages_failed || 0;
+    document.getElementById('s-rate').textContent = d.crawl_rate || 0;
+    document.getElementById('s-dedup').textContent = d.dedup_hits || 0;
+    const fr = document.getElementById('failure-reasons');
+    const reasons = d.failure_reasons || {};
+    const entries = Object.entries(reasons);
+    if (!entries.length) {
+      fr.innerHTML = '<li class="loading">No failures recorded</li>';
+    } else {
+      fr.innerHTML = entries.map(([reason, count]) =>
+        '<li style="display:flex;justify-content:space-between;padding:10px 0">' +
+        '<span style="color:#f8fafc">' + reason + '</span>' +
+        '<span style="color:#ef4444;font-weight:600">' + count + '</span></li>'
+      ).join('');
+    }
     document.getElementById('status-badge').textContent = 'Connected';
     document.getElementById('status-badge').className = 'badge';
   } catch (e) {

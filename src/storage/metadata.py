@@ -72,10 +72,13 @@ class MetadataStore:
             )
             await session.commit()
 
-    async def mark_failed(self, url_id: int) -> None:
+    async def mark_failed(self, url_id: int, reason: str | None = None) -> None:
         async with async_session() as session:
             await session.execute(
-                update(Url).where(Url.id == url_id).values(status=UrlStatus.FAILED)
+                update(Url).where(Url.id == url_id).values(
+                    status=UrlStatus.FAILED,
+                    failure_reason=reason,
+                )
             )
             await session.commit()
 
