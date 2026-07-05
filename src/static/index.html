@@ -54,20 +54,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="container">
   <div class="stats-grid" id="stats-grid">
     <div class="stat-card">
+      <div class="label">Pages Crawled</div>
+      <div class="value green" id="s-crawled">-</div>
+    </div>
+    <div class="stat-card">
       <div class="label">Pages Indexed</div>
-      <div class="value green" id="s-indexed">-</div>
+      <div class="value blue" id="s-indexed">-</div>
     </div>
     <div class="stat-card">
-      <div class="label">Queue Size</div>
-      <div class="value blue" id="s-queue">-</div>
+      <div class="label">Queue Pending</div>
+      <div class="value yellow" id="s-queue">-</div>
     </div>
     <div class="stat-card">
-      <div class="label">Crawl Rate</div>
-      <div class="value yellow" id="s-rate">-</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Dedup Hits</div>
-      <div class="value" id="s-dedup">-</div>
+      <div class="label">Failed</div>
+      <div class="value" id="s-failed">-</div>
     </div>
   </div>
 
@@ -112,11 +112,10 @@ async function loadStats() {
   try {
     const r = await fetch(API + '/metrics');
     const d = await r.json();
+    document.getElementById('s-crawled').textContent = d.pages_crawled || 0;
     document.getElementById('s-indexed').textContent = d.indexed_pages || 0;
     document.getElementById('s-queue').textContent = d.queue_size || 0;
-    document.getElementById('s-rate').textContent =
-      (d.crawl_rate || 0).toFixed(1) + '/s';
-    document.getElementById('s-dedup').textContent = d.dedup_hits || 0;
+    document.getElementById('s-failed').textContent = d.pages_failed || 0;
     document.getElementById('status-badge').textContent = 'Connected';
     document.getElementById('status-badge').className = 'badge';
   } catch (e) {

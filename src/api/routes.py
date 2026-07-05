@@ -16,16 +16,6 @@ from src.api.models import (
     StatsResponse,
 )
 from src.config import settings
-from src.metrics import (
-    crawl_rate,
-    dedup_hits,
-    indexed_pages_total,
-    pages_crawled_total,
-    pages_failed_total,
-    queue_size,
-    robots_cache_hits,
-    robots_cache_misses,
-)
 from src.storage.search_index import SearchIndex
 
 logger = logging.getLogger(__name__)
@@ -115,20 +105,40 @@ async def health() -> dict:
 
 @router.get("/metrics")
 async def metrics() -> dict:
-    def _counter_val(c: object) -> float:
-        if hasattr(c, "_metrics") and c._metrics:  # type: ignore[attr-defined]
-            return sum(m._value.get() for m in c._metrics.values())  # type: ignore[attr-defined]
-        return 0.0
+    from sqlalchemy import func, select
+
+    from src.models.db import Url, UrlStatus, async_session
+
+    async with async_session() as session:
+        total = (await session.execute(select(func.count(Url.id)))).scalar() or 0
+        crawled = (
+            await session.execute(
+                select(func.count(Url.id)).where(Url.status == UrlStatus.CRAWLED)
+            )
+        ).scalar() or 0
+        failed = (
+            await session.execute(
+                select(func.count(Url.id)).where(Url.status == UrlStatus.FAILED)
+            )
+        ).scalar() or 0
+        pending = (
+            await session.execute(
+                select(func.count(Url.id)).where(Url.status == UrlStatus.PENDING)
+            )
+        ).scalar() or 0
+
+    indexed = await search_index.count()
 
     return {
-        "pages_crawled": _counter_val(pages_crawled_total),
-        "pages_failed": _counter_val(pages_failed_total),
-        "queue_size": queue_size._value.get(),
-        "crawl_rate": crawl_rate._value.get(),
-        "dedup_hits": _counter_val(dedup_hits),
-        "indexed_pages": _counter_val(indexed_pages_total),
-        "robots_cache_hits": _counter_val(robots_cache_hits),
-        "robots_cache_misses": _counter_val(robots_cache_misses),
+        "pages_crawled": crawled,
+        "pages_failed": failed,
+        "queue_size": pending,
+        "crawl_rate": 0.0,
+        "dedup_hits": 0,
+        "indexed_pages": indexed,
+        "total_urls": total,
+        "robots_cache_hits": 0,
+        "robots_cache_misses": 0,
     }
 
 
