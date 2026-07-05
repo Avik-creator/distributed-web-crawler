@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Crawler Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;border-bottom:1px solid #334155;padding:20px 32px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:24px;font-weight:700;color:#f8fafc}
+.header .badge{background:#22c55e;color:#000;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600}
+.container{max-width:1200px;margin:0 auto;padding:24px 32px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.stat-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px}
+.stat-card .label{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
+.stat-card .value{font-size:28px;font-weight:700;color:#f8fafc}
+.stat-card .value.green{color:#22c55e}
+.stat-card .value.blue{color:#3b82f6}
+.stat-card .value.yellow{color:#eab308}
+.section{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;margin-bottom:24px}
+.section h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#f8fafc}
+.search-box{display:flex;gap:8px;margin-bottom:16px}
+.search-box input{flex:1;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;color:#f8fafc;font-size:14px;outline:none}
+.search-box input:focus{border-color:#3b82f6}
+.search-box button,.btn{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:12px 24px;font-size:14px;font-weight:600;cursor:pointer}
+.search-box button:hover,.btn:hover{background:#2563eb}
+.btn-green{background:#22c55e;color:#000}
+.btn-green:hover{background:#16a34a}
+.results{list-style:none}
+.results li{border-bottom:1px solid #334155;padding:16px 0}
+.results li:last-child{border-bottom:none}
+.results .title{color:#3b82f6;font-weight:600;text-decoration:none;font-size:15px}
+.results .title:hover{text-decoration:underline}
+.results .url{color:#64748b;font-size:12px;margin-top:4px}
+.results .score{color:#22c55e;font-size:12px;margin-top:4px}
+.enqueue-box{display:flex;gap:8px}
+.enqueue-box input{flex:1;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 16px;color:#f8fafc;font-size:14px;outline:none}
+.health-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.health-item{display:flex;align-items:center;gap:8px;padding:12px;background:#0f172a;border-radius:8px}
+.health-dot{width:10px;height:10px;border-radius:50%}
+.health-dot.ok{background:#22c55e}
+.health-dot.error{background:#ef4444}
+.health-dot.unknown{background:#64748b}
+.toast{position:fixed;bottom:24px;right:24px;background:#22c55e;color:#000;padding:12px 20px;border-radius:8px;font-weight:600;display:none;z-index:100}
+.loading{color:#64748b;font-style:italic}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Web Crawler</h1>
+  <span class="badge" id="status-badge">Connecting...</span>
+</div>
+<div class="container">
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card">
+      <div class="label">Pages Indexed</div>
+      <div class="value green" id="s-indexed">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Queue Size</div>
+      <div class="value blue" id="s-queue">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Crawl Rate</div>
+      <div class="value yellow" id="s-rate">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Dedup Hits</div>
+      <div class="value" id="s-dedup">-</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Search Pages</h2>
+    <div class="search-box">
+      <input type="text" id="search-input"
+        placeholder="Search crawled content..."
+        onkeydown="if(event.key==='Enter')doSearch()">
+      <button onclick="doSearch()">Search</button>
+    </div>
+    <ul class="results" id="search-results"></ul>
+  </div>
+
+  <div class="section">
+    <h2>Enqueue URLs</h2>
+    <div class="enqueue-box">
+      <input type="text" id="enqueue-input"
+        placeholder="https://example.com"
+        onkeydown="if(event.key==='Enter')doEnqueue()">
+      <button class="btn btn-green" onclick="doEnqueue()">Add URL</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Health Checks</h2>
+    <div class="health-grid" id="health-grid"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const API='';
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(API + '/metrics');
+    const d = await r.json();
+    document.getElementById('s-indexed').textContent = d.indexed_pages || 0;
+    document.getElementById('s-queue').textContent = d.queue_size || 0;
+    document.getElementById('s-rate').textContent =
+      (d.crawl_rate || 0).toFixed(1) + '/s';
+    document.getElementById('s-dedup').textContent = d.dedup_hits || 0;
+    document.getElementById('status-badge').textContent = 'Connected';
+    document.getElementById('status-badge').className = 'badge';
+  } catch (e) {
+    document.getElementById('status-badge').textContent = 'Offline';
+    document.getElementById('status-badge').style.background = '#ef4444';
+  }
+}
+
+async function loadHealth() {
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    const g = document.getElementById('health-grid');
+    g.innerHTML = '';
+    for (const [k, v] of Object.entries(d.checks)) {
+      g.innerHTML +=
+        '<div class="health-item">' +
+        '<div class="health-dot ' + v + '"></div>' +
+        '<span>' + k + ': ' + v + '</span></div>';
+    }
+  } catch (e) {}
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const r = document.getElementById('search-results');
+  r.innerHTML = '<li class="loading">Searching...</li>';
+  try {
+    const res = await fetch(API + '/search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q})
+    });
+    const d = await res.json();
+    if (!d.results.length) {
+      r.innerHTML = '<li class="loading">No results found</li>';
+      return;
+    }
+    r.innerHTML = d.results.map(h =>
+      '<li>' +
+      '<a class="title" href="' + h.url + '" target="_blank">' +
+      (h.title || h.url) + '</a>' +
+      '<div class="url">' + h.url + '</div>' +
+      '<div class="score">Score: ' + h.score.toFixed(2) + '</div>' +
+      '</li>'
+    ).join('');
+  } catch (e) {
+    r.innerHTML = '<li class="loading">Search failed</li>';
+  }
+}
+
+async function doEnqueue() {
+  const input = document.getElementById('enqueue-input');
+  const url = input.value.trim();
+  if (!url) return;
+  try {
+    await fetch(API + '/urls', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urls: [url]})
+    });
+    toast('URL enqueued: ' + url);
+    input.value = '';
+  } catch (e) {
+    toast('Failed to enqueue');
+  }
+}
+
+loadStats();
+loadHealth();
+setInterval(loadStats, 5000);
+setInterval(loadHealth, 30000);
+</script>
+</body>
+</html>

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 
 from src.api.models import (
     EnqueueRequest,
@@ -14,12 +16,23 @@ from src.api.models import (
     StatsResponse,
 )
 from src.config import settings
+from src.metrics import (
+    crawl_rate,
+    dedup_hits,
+    indexed_pages_total,
+    pages_crawled_total,
+    pages_failed_total,
+    queue_size,
+    robots_cache_hits,
+    robots_cache_misses,
+)
 from src.storage.search_index import SearchIndex
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 search_index = SearchIndex()
+DASHBOARD_PATH = Path(__file__).parent.parent / "static" / "index.html"
 
 
 @router.on_event("startup")
@@ -71,4 +84,57 @@ async def stats() -> StatsResponse:
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    import aiohttp
+
+    checks = {"api": "ok", "redis": "unknown", "elasticsearch": "unknown"}
+
+    try:
+        import redis.asyncio as aioredis
+
+        r = aioredis.from_url(settings.redis_url)
+        await r.ping()
+        await r.aclose()
+        checks["redis"] = "ok"
+    except Exception:
+        checks["redis"] = "error"
+
+    try:
+        async with aiohttp.ClientSession() as session, session.get(
+            f"{settings.elasticsearch_url}/_cluster/health"
+        ) as resp:
+                if resp.status == 200:
+                    checks["elasticsearch"] = "ok"
+                else:
+                    checks["elasticsearch"] = "error"
+    except Exception:
+        checks["elasticsearch"] = "error"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return {"status": "healthy" if all_ok else "degraded", "checks": checks}
+
+
+@router.get("/metrics")
+async def metrics() -> dict:
+    return {
+        "pages_crawled": pages_crawled_total._value.get(),
+        "pages_failed": pages_failed_total._value.get(),
+        "queue_size": queue_size._value.get(),
+        "crawl_rate": crawl_rate._value.get(),
+        "dedup_hits": dedup_hits._value.get(),
+        "indexed_pages": indexed_pages_total._value.get(),
+        "robots_cache_hits": robots_cache_hits._value.get(),
+        "robots_cache_misses": robots_cache_misses._value.get(),
+    }
+
+
+@router.get("/ui", response_class=HTMLResponse)
+async def ui() -> str:
+    return DASHBOARD_PATH.read_text()
+
+
+@router.get("/pages/{url:path}")
+async def get_page(url: str) -> dict:
+    result = await search_index.search(url, size=1)
+    if not result:
+        return {"error": "Page not found"}
+    return result[0]

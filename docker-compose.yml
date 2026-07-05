@@ -39,5 +39,41 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      CRAWLER_DATABASE_URL: postgresql+asyncpg://crawler:crawler@postgres:5432/crawler
+      CRAWLER_REDIS_URL: redis://redis:6379/0
+      CRAWLER_ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      CRAWLER_DATABASE_URL: postgresql+asyncpg://crawler:crawler@postgres:5432/crawler
+      CRAWLER_REDIS_URL: redis://redis:6379/0
+      CRAWLER_ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
 volumes:
   pgdata:
